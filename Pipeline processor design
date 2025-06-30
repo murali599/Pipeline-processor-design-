@@ -1,0 +1,188 @@
+module pipelined_processor(
+    input clk,
+    input reset
+);
+    // Parameters
+    parameter REG_BITS = 8;
+    parameter REG_COUNT = 8;
+    parameter MEM_SIZE = 256;
+    parameter INST_BITS = 16;
+    parameter PC_BITS = 8;
+    // Opcodes
+    localparam ADD  = 4'b0001;
+    localparam SUB  = 4'b0010;
+    localparam LOAD = 4'b0011;
+    // Pipeline registers
+    reg [INST_BITS-1:0] IF_ID_IR;
+    reg [PC_BITS-1:0] IF_ID_PC;
+
+    reg [INST_BITS-1:0] ID_EX_IR;
+    reg [REG_BITS-1:0] ID_EX_A, ID_EX_B;
+    reg [PC_BITS-1:0] ID_EX_PC;
+
+    reg [INST_BITS-1:0] EX_MEM_IR;
+    reg [REG_BITS-1:0] EX_MEM_ALUOUT, EX_MEM_B;
+    reg [PC_BITS-1:0] EX_MEM_PC;
+
+    reg [INST_BITS-1:0] MEM_WB_IR;
+    reg [REG_BITS-1:0] MEM_WB_ALUOUT, MEM_WB_MEMOUT;
+    reg [PC_BITS-1:0] MEM_WB_PC;
+
+    // Registers and memory
+    reg [REG_BITS-1:0] regfile [0:REG_COUNT-1];
+    reg [REG_BITS-1:0] memory [0:MEM_SIZE-1];
+    reg [INST_BITS-1:0] instr_mem [0:MEM_SIZE-1];
+
+    reg [PC_BITS-1:0] PC;
+
+    integer i;
+
+    // Instruction fields
+    wire [3:0] opcode_IF   = IF_ID_IR[15:12];
+    wire [2:0] rs_IF       = IF_ID_IR[11:9];
+    wire [2:0] rt_IF       = IF_ID_IR[8:6];
+    wire [2:0] rd_IF       = IF_ID_IR[5:3];
+    wire [7:0] imm_IF      = IF_ID_IR[7:0];
+
+    wire [3:0] opcode_ID   = ID_EX_IR[15:12];
+    wire [2:0] rs_ID       = ID_EX_IR[11:9];
+    wire [2:0] rt_ID       = ID_EX_IR[8:6];
+    wire [2:0] rd_ID       = ID_EX_IR[5:3];
+    wire [7:0] imm_ID      = ID_EX_IR[7:0];
+
+    wire [3:0] opcode_EX   = EX_MEM_IR[15:12];
+    wire [2:0] rs_EX       = EX_MEM_IR[11:9];
+    wire [2:0] rt_EX       = EX_MEM_IR[8:6];
+    wire [2:0] rd_EX       = EX_MEM_IR[5:3];
+    wire [7:0] imm_EX      = EX_MEM_IR[7:0];
+
+    wire [3:0] opcode_MEM  = MEM_WB_IR[15:12];
+    wire [2:0] rs_MEM      = MEM_WB_IR[11:9];
+    wire [2:0] rt_MEM      = MEM_WB_IR[8:6];
+    wire [2:0] rd_MEM      = MEM_WB_IR[5:3];
+    wire [7:0] imm_MEM     = MEM_WB_IR[7:0];
+
+    // Main pipeline logic
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            PC <= 0;
+            IF_ID_IR <= 0;  IF_ID_PC <= 0;
+            ID_EX_IR <= 0;  ID_EX_A <= 0; ID_EX_B <= 0; ID_EX_PC <= 0;
+            EX_MEM_IR <= 0; EX_MEM_ALUOUT <= 0; EX_MEM_B <= 0; EX_MEM_PC <= 0;
+            MEM_WB_IR <= 0; MEM_WB_ALUOUT <= 0; MEM_WB_MEMOUT <= 0; MEM_WB_PC <= 0;
+            for (i = 0; i < REG_COUNT; i = i + 1) regfile[i] <= 0;
+            for (i = 0; i < MEM_SIZE; i = i + 1) memory[i] <= 0;
+        end else begin
+            // Write Back (MEM/WB)
+            if (opcode_MEM == ADD || opcode_MEM == SUB)
+                regfile[rd_MEM] <= MEM_WB_ALUOUT;
+            else if (opcode_MEM == LOAD)
+                regfile[rt_MEM] <= MEM_WB_MEMOUT;
+
+            // Memory Access (EX/MEM)
+            MEM_WB_IR      <= EX_MEM_IR;
+            MEM_WB_ALUOUT  <= EX_MEM_ALUOUT;
+            MEM_WB_PC      <= EX_MEM_PC;
+            if (opcode_EX == LOAD)
+                MEM_WB_MEMOUT <= memory[EX_MEM_ALUOUT];
+
+            // Execute (ID/EX)
+            EX_MEM_IR      <= ID_EX_IR;
+            EX_MEM_PC      <= ID_EX_PC;
+            EX_MEM_B       <= ID_EX_B;
+            case (opcode_ID)
+                ADD:  EX_MEM_ALUOUT <= ID_EX_A + ID_EX_B;
+                SUB:  EX_MEM_ALUOUT <= ID_EX_A - ID_EX_B;
+                LOAD: EX_MEM_ALUOUT <= ID_EX_A + imm_ID; // Address = base + offset
+                default: EX_MEM_ALUOUT <= 0;
+            endcase
+
+            // Instruction Decode (IF/ID)
+            ID_EX_IR <= IF_ID_IR;
+            ID_EX_PC <= IF_ID_PC;
+            // Register fetch
+            ID_EX_A  <= regfile[rs_IF];
+            ID_EX_B  <= regfile[rt_IF];
+
+            // Instruction Fetch
+            IF_ID_IR <= instr_mem[PC];
+            IF_ID_PC <= PC;
+            PC <= PC + 1;
+        end
+    end
+
+    // Simulation only: Show pipeline stages
+    always @(posedge clk) begin
+        $display("Cycle %0d", $time);
+        $display("IF/ID:   PC=%0d IR=%h", IF_ID_PC, IF_ID_IR);
+        $display("ID/EX:   PC=%0d IR=%h A=%h B=%h", ID_EX_PC, ID_EX_IR, ID_EX_A, ID_EX_B);
+        $display("EX/MEM:  PC=%0d IR=%h ALUOUT=%h B=%h", EX_MEM_PC, EX_MEM_IR, EX_MEM_ALUOUT, EX_MEM_B);
+        $display("MEM/WB:  PC=%0d IR=%h ALUOUT=%h MEMOUT=%h", MEM_WB_PC, MEM_WB_IR, MEM_WB_ALUOUT, MEM_WB_MEMOUT);
+        $display("Registers: %h %h %h %h %h %h %h %h", regfile[0], regfile[1], regfile[2], regfile[3], regfile[4], regfile[5], regfile[6], regfile[7]);
+        $display("---------------------------------------------------");
+    end
+
+endmodule.  
+
+
+module fir_filter #(
+    parameter N = 4,                 // Number of taps
+    parameter DATA_WIDTH = 16,       // Bit width of input and output
+    parameter COEFF_WIDTH = 16       // Bit width of coefficients
+)(
+    input clk,
+    input rst,
+    input signed [DATA_WIDTH-1:0] x_in,
+    output reg signed [DATA_WIDTH-1:0] y_out
+);
+
+    // Example coefficients (change as needed)
+    // For a simple moving average, all = 1/N
+    localparam signed [COEFF_WIDTH-1:0] coeffs [0:N-1] = {
+        16'sd8192, // 0.25 * 32768
+        16'sd8192, // 0.25 * 32768
+        16'sd8192, // 0.25 * 32768
+        16'sd8192  // 0.25 * 32768
+    };
+
+    reg signed [DATA_WIDTH-1:0] shift_reg [0:N-1];
+    integer i;
+    wire signed [DATA_WIDTH+COEFF_WIDTH-1:0] products [0:N-1];
+
+    // Shift register and multiply
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            for (i = 0; i < N; i = i + 1)
+                shift_reg[i] <= 0;
+        end else begin
+            shift_reg[0] <= x_in;
+            for (i = 1; i < N; i = i + 1)
+                shift_reg[i] <= shift_reg[i-1];
+        end
+    end
+
+    // Multiply
+    generate
+        genvar j;
+        for (j = 0; j < N; j = j + 1) begin : multiply
+            assign products[j] = shift_reg[j] * coeffs[j];
+        end
+    endgenerate
+
+    // Accumulate
+    reg signed [DATA_WIDTH+COEFF_WIDTH+3:0] acc;
+    always @(*) begin
+        acc = 0;
+        for (i = 0; i < N; i = i + 1)
+            acc = acc + products[i];
+    end
+
+    // Output (truncate to DATA_WIDTH)
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            y_out <= 0;
+        else
+            y_out <= acc >>> 15; // Adjust shift for Q1.15 fixed point
+    end
+
+endmodule
